@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bản đồ giao thông tỉnh Sóc Trăng</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    #app { display: flex; height: 100%; }
+    #panel { width: 300px; padding: 16px; box-sizing: border-box; overflow-y: auto; background: #fafafa; border-right: 1px solid #ddd; }
+    #panel h1 { font-size: 18px; margin: 0 0 4px; }
+    #panel p.sub { margin: 0 0 16px; color: #555; font-size: 13px; }
+    .item { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 14px; cursor: pointer; }
+    .swatch { width: 28px; height: 0; border-top-width: 4px; border-top-style: solid; flex: none; }
+    .note { margin-top: 20px; font-size: 12px; color: #666; line-height: 1.4; }
+    #map { flex: 1; }
+    .map-label { background: none; border: 0; white-space: nowrap; pointer-events: none; text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff; }
+    .map-label.province { transform: translate(-50%, -50%); font-size: 15px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #5f6b7a; }
+    .map-label.province.main { color: #b71c1c; font-size: 17px; }
+    .map-label.city { transform: translate(-50%, -50%); font-size: 12px; font-weight: 600; color: #222; }
+    .map-label.city.main { font-size: 14px; font-weight: 700; }
+    .site-icon { background: none; border: 0; filter: drop-shadow(0 1px 2px rgba(0,0,0,.4)); }
+    @media (max-width: 700px) {
+      #app { flex-direction: column-reverse; }
+      #panel { width: auto; max-height: 38%; border-right: 0; border-top: 1px solid #ddd; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside id="panel">
+      <h1>Giao thông tỉnh Sóc Trăng</h1>
+      <p class="sub">Kết nối cao tốc và quốc lộ</p>
+      <div id="legend"></div>
+      <p class="note">Quốc lộ nhạt là quốc lộ không dẫn trực tiếp tới Sóc Trăng.</p>
+      <p class="note">Hình dạng các tuyến lấy từ dữ liệu OpenStreetMap. Tình trạng (hiện hữu / đang xây) theo gắn thẻ của OSM nên có thể chưa cập nhật kịp thực tế.</p>
+    </aside>
+    <div id="map" role="application" aria-label="Bản đồ giao thông Sóc Trăng"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="data.js"></script>
+  <script src="roads.js"></script>
+  <script src="boundary.js"></script>
+  <script>
+    const D = window.MAP_DATA;
+    const map = L.map("map").setView(D.center, 9);
+    // Nền nhạt, ít đường nhánh ở mức zoom thấp; đường nhỏ chỉ hiện khi zoom gần (cấp thành phố)
+    const esri = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
+    const esriAttr = "Tiles &copy; Esri, HERE, Garmin, OpenStreetMap contributors";
+    // Ngưỡng zoom: từ DETAIL_ZOOM trở lên (cấp thành phố) mới hiện nền chi tiết có đường nhánh
+    const DETAIL_ZOOM = 12;
+    map.setMaxZoom(18);
+
+    // Zoom xa: nền xám ít đường
+    L.tileLayer(esri + "World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: DETAIL_ZOOM - 1, attribution: esriAttr
+    }).addTo(map);
+    // Lớp nhãn (tên địa danh) nằm trên cùng
+    map.createPane("labels").style.zIndex = 650;
+    map.getPane("labels").style.pointerEvents = "none";
+    // (Tên tỉnh / thành phố được vẽ bằng nhãn riêng bên dưới, nên không dùng lớp nhãn có sẵn của Esri)
+
+    // Zoom gần: nền OSM chi tiết (đủ đường nhánh, đường con)
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      minZoom: DETAIL_ZOOM, maxZoom: 18,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const legend = document.getElementById("legend");
+
+    // Hình học thật của các tuyến lấy từ OpenStreetMap (roads.js)
+    const LAYERS = [
+      { cat: "expressway-existing", label: "Cao tốc hiện hữu", color: "#2e9e44", weight: 5, dash: null },
+      { cat: "national-existing", label: "Quốc lộ hiện hữu", color: "#1976d2", weight: 3.5, dash: null },
+      { cat: "expressway-future", label: "Cao tốc đang xây / quy hoạch", color: "#d32f2f", weight: 5, dash: null }
+    ];
+
+    // Địa giới Sóc Trăng: nền đỏ nhạt (opacity 15%), nằm dưới các tuyến đường
+    map.createPane("boundary").style.zIndex = 350;
+    const boundaryLayer = L.geoJSON(window.BOUNDARY, {
+      pane: "boundary",
+      interactive: false,
+      style: { color: "#d32f2f", weight: 1.5, opacity: 0.6, fillColor: "#d32f2f", fillOpacity: 0.05 }
+    }).addTo(map);
+    const bItem = document.createElement("label");
+    bItem.className = "item";
+    bItem.innerHTML = `<input type="checkbox" checked>
+      <span class="swatch" style="height:12px;border:1px solid #d32f2f;background:rgba(211,47,47,.05)"></span>
+      <span>Địa giới tỉnh Sóc Trăng</span>`;
+    bItem.querySelector("input").addEventListener("change", (e) =>
+      e.target.checked ? boundaryLayer.addTo(map) : map.removeLayer(boundaryLayer));
+    legend.appendChild(bItem);
+
+    LAYERS.forEach((layer) => {
+      const group = L.layerGroup();
+      // Vẽ tuyến không liên quan Sóc Trăng trước (nhạt, nằm dưới), tuyến chính sau (đậm, nằm trên)
+      const feats = window.ROADS.features.filter((f) => f.properties.cat === layer.cat)
+        .sort((a, b) => Number(a.properties.focus) - Number(b.properties.focus));
+      feats.forEach((f) => {
+        // Cao tốc luôn giữ nguyên; chỉ quốc lộ không dẫn tới Sóc Trăng mới làm nhạt
+        const focus = layer.cat.startsWith("expressway") || f.properties.focus;
+        L.polyline(f.geometry.coordinates.map((line) => line.map(([lng, lat]) => [lat, lng])), {
+          color: layer.color,
+          weight: focus ? layer.weight : Math.max(2, layer.weight - 1),
+          dashArray: layer.dash,
+          opacity: focus ? 0.9 : 0.4,
+          interactive: true
+        })
+          .bindPopup(`<strong>${esc(f.properties.name)}</strong><br>${esc(layer.label)}`)
+          .bindTooltip(f.properties.name, { sticky: true })
+          .addTo(group);
+      });
+      group.addTo(map);
+
+      const label = document.createElement("label");
+      label.className = "item";
+      label.innerHTML = `<input type="checkbox" checked>
+        <span class="swatch" style="border-top-color:${layer.color};border-top-style:${layer.dash ? "dashed" : "solid"}"></span>
+        <span>${esc(layer.label)}</span>`;
+      label.querySelector("input").addEventListener("change", (e) =>
+        e.target.checked ? group.addTo(map) : map.removeLayer(group));
+      legend.appendChild(label);
+    });
+
+    // Nhãn tên tỉnh và thành phố (chỉ chữ, không có chấm icon)
+    const textLabel = (item, cls) => L.marker(item.pos, {
+      interactive: false, keyboard: false, pane: "labels",
+      icon: L.divIcon({ className: `map-label ${cls}${item.main ? " main" : ""}`, html: esc(item.name), iconSize: [0, 0] })
+    });
+    const provinceLabels = L.layerGroup(D.provinces.map((p) => textLabel(p, "province")));
+    const cityLabels = L.layerGroup(D.cities.map((c) => textLabel(c, "city")));
+    // Zoom xa (< 11): hiện tên tỉnh. Từ zoom 9 trở lên: hiện tên thành phố. Khi vào nền chi tiết (>= 12), bỏ tên tỉnh.
+    const refreshLabels = () => {
+      const z = map.getZoom();
+      (z <= DETAIL_ZOOM - 2 ? provinceLabels.addTo(map) : map.removeLayer(provinceLabels));
+      (z >= 9 ? cityLabels.addTo(map) : map.removeLayer(cityLabels));
+    };
+    map.on("zoomend", refreshLabels);
+    refreshLabels();
+
+    // Địa điểm dự kiến: Đại lý Toyota Sóc Trăng. Kích thước thay đổi theo mức zoom.
+    const SITES = [
+      { name: "Đại lý Toyota Sóc Trăng (dự kiến)", pos: [9.6085556, 105.9480278], color: "#eb0a1e" },
+      // VỊ TRÍ ƯỚC TÍNH: khu bến ngoài khơi cách cửa Trần Đề (~9.53, 106.20) khoảng 18 km về phía đông nam,
+      // theo chiều dài cầu dẫn quy hoạch (~17,8 km). Chưa có toạ độ chính thức, hãy chỉnh lại khi có.
+      { name: "Cảng nước sâu Trần Đề (vị trí ước tính)", pos: [9.42, 106.33], color: "#0d47a1" }
+    ];
+    const siteIcon = (z, color) => {
+      const s = Math.round(Math.min(44, Math.max(14, 6 + z * 2.2))); // z8 ≈ 24px, z12 ≈ 32px, z16+ = 41–44px
+      return L.divIcon({
+        className: "site-icon",
+        html: `<svg width="${s}" height="${s * 1.3}" viewBox="0 0 24 31" aria-hidden="true">
+                 <path d="M12 30C12 30 2 18 2 11a10 10 0 0 1 20 0c0 7-10 19-10 19z" fill="${color}" stroke="#fff" stroke-width="2"/>
+                 <circle cx="12" cy="11" r="4" fill="#fff"/></svg>`,
+        iconSize: [s, s * 1.3],
+        iconAnchor: [s / 2, s * 1.3] // mũi nhọn của pin chạm đúng toạ độ
+      });
+    };
+    SITES.forEach((site) => {
+      const marker = L.marker(site.pos, { icon: siteIcon(map.getZoom(), site.color), zIndexOffset: 1000, title: site.name })
+        .bindTooltip(site.name, { permanent: false, direction: "right", offset: [12, -20] })
+        .bindPopup(`<strong>${esc(site.name)}</strong><br>${site.pos[0]}, ${site.pos[1]}`)
+        .addTo(map);
+      map.on("zoomend", () => marker.setIcon(siteIcon(map.getZoom(), site.color)));
+
+      // Mục trong chú giải
+      const item = document.createElement("label");
+      item.className = "item";
+      item.innerHTML = `<input type="checkbox" checked><span style="color:${site.color}">&#9679;</span><span>${esc(site.name)}</span>`;
+      item.querySelector("input").addEventListener("change", (e) =>
+        e.target.checked ? marker.addTo(map) : map.removeLayer(marker));
+      legend.appendChild(item);
+    });
+  </script>
+</body>
+</html>
